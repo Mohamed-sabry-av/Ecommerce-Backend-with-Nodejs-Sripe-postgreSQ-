@@ -1,4 +1,3 @@
-const { response } = require("express");
 const pool = require("../config/db.config");
 
 exports.createCart = async (req, res) => {
@@ -152,10 +151,12 @@ exports.getCart = async(req,res)=>{
 
 // remove From Cart By giving the id of the item through the params
 exports.removeFromCart = async (req,res)=>{
-    const itemId = req.params.id
+    const itemId = parseInt(req.params.id);
     const userId = req.user?.id;
 
     try{
+        // Logged In User
+        if(userId){
         const cartResult =await pool.query(
             `SELECT * FROM carts WHERE user_id = $1`,[userId]
         )
@@ -170,7 +171,37 @@ exports.removeFromCart = async (req,res)=>{
         if(deleteResult.rows.length ===0){
             return res.status(404).json({message: "Item not found in cart"});
         }
-        res.status(200).json({ message: "Item removed from cart successfully" });
+        res.status(200).json({
+            message: "Item removed from cart successfully",
+            deletedItem: deleteResult.rows[0],
+          });
+    }
+    
+    else{
+        // Guest
+        if (!req.session || !req.session.cart) {
+        return res.status(404).json({ message: "Cart not found" });
+      }
+
+      const itemIndex = req.session.cart.findIndex((item) => item.id === itemId);
+      console.log(itemId,itemIndex)
+      
+      if (itemIndex === -1) {
+        return res.status(404).json({ message: "Item not found in cart" });
+      }
+
+      const deletedItem = req.session.cart.splice(itemIndex, 1)[0];
+      req.session.save((err) => {
+        if (err) {
+          console.error("Error saving session:", err.message);
+          return res.status(500).json({ message: "Failed to save session" });
+        }
+      });
+        res.status(200).json({
+            message: "Item removed from cart successfully",
+            deletedItem,
+        })
+    }
     }catch(err){
         console.error("Error removing from cart:", err);
         res.status(500).json({ message: "Failed to remove from cart" });
