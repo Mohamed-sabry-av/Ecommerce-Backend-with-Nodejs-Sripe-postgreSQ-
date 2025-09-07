@@ -1,4 +1,5 @@
 const pool = require("../config/db.config");
+const cache = require("../util/memory-cache.utils");
 
 exports.createProduct = async (req,res) => {
     const { name, description, price, stock } = req.body;
@@ -17,10 +18,20 @@ exports.createProduct = async (req,res) => {
 
 exports.getProductById = async (req,res)=>{
     const id = req.params.id;
+    const cacheKey = `product:${id}`;
     try{
+        const cached = cache.get(cacheKey);
+        if(cached){
+            return res.status(200).json({
+                message: "cached List are :",
+                source: "Cache",
+                data: cached,
+            });
+        }
         const getProduct =await pool.query(
             `SELECT * FROM products WHERE id = $1 `,[id]
         )
+        cache.set(cacheKey,getProduct.rows)
         res.status(201).json({message : "Successed ", Product: getProduct.rows})
     }catch(err){
     console.log(err.message);
@@ -29,10 +40,21 @@ exports.getProductById = async (req,res)=>{
 }
 
 exports.getProducts = async(req,res)=>{
+    const cacheKey = `allProducts`;
     try{
+        const cached = cache.get(cacheKey)
+        if(cached){
+            return res.status(200).json({
+                message: "cached List are :",
+                source: "Cache",
+                data: cached,
+            });
+        }
         const getProduct = await pool.query(
             `SELECT * FROM products`
         )
+
+        cache.set(cacheKey,getProduct.rows)
        res.status(201).json({message : "Successed ", Product: getProduct.rows})
     }catch(err){
     console.log(err.message);

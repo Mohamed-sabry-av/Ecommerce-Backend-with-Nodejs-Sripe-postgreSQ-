@@ -71,11 +71,15 @@ exports.createCheckout = async (req, res) => {
       mode: "payment",
       success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${process.env.FRONTEND_URL}/cancel`,
+      metadata: {
+      user_id: userId || 'guest',
+      cart_id: cartId || 'session-based',
+    },
     });
     res.status(200).json({ url: session.url });
   } catch (err) {
     console.error("Error creating checkout session:", err.message);
-    res
+    resc
       .status(500)
       .json({ message: "Something went wrong", error: err.message });
   }

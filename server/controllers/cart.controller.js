@@ -1,4 +1,5 @@
 const pool = require("../config/db.config");
+const cache = require('../util/memory-cache.utils')
 
 exports.createCart = async (req, res) => {
   const userId = req.user?.id;
@@ -98,8 +99,13 @@ exports.createCart = async (req, res) => {
 
 exports.getCart = async(req,res)=>{
     const userId = req.user?.id;
-    
+    const cacheKey = userId ? `cart_user_${userId}` : `cart_guest_${req.sessionID}`;
     try{
+        const cachedCart = cache.get(cacheKey);
+        if (cachedCart) {
+            return res.status(200).json({ message: "Success (from cache)", cart: cachedCart });
+        }
+
         if(userId){
         const cartResult =await pool.query(
             `SELECT id FROM carts WHERE user_id = $1`,[userId]
@@ -116,6 +122,7 @@ exports.getCart = async(req,res)=>{
              WHERE ci.cart_id = $1
             `,[cartId]
         )
+        cache.set(cacheKey, itemsResult.rows);
         res.status(200).json({message:"Successed", cart:itemsResult.rows})
     }else{
 
@@ -141,6 +148,7 @@ exports.getCart = async(req,res)=>{
             price: product?.price || 0,
           };
         });
+        cache.set(cacheKey, itemsResult.rows);
         res.status(200).json({ message: "Success", cart });
     }
     }catch(err){
