@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Socket.IO Test</title>
+</head>
+<body>
+  <h1>Socket.IO Test</h1>
+  <p>JWT Token: <input type="text" id="jwtToken" placeholder="Paste your JWT here"></p>
+  <button onclick="connectSocket()">Connect to Socket.IO</button>
+  <div id="notifications"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.js"></script>
+  <script>
+    let socket = null; // متغير لتخزين اتصال Socket.IO
+
+    function connectSocket() {
+      const token = document.getElementById("jwtToken").value;
+      if (!token) {
+        alert("Please enter a JWT token");
+        return;
+      }
+
+      if (socket) {
+        socket.disconnect(); // قطع أي اتصال سابق
+      }
+
+      socket = io("http://localhost:3000", {
+        transports: ["websocket"],
+        reconnectionAttempts: 3, // عدد محاولات إعادة الاتصال
+      });
+
+      socket.on("connect", () => {
+        console.log("Connected to Socket.IO:", socket.id);
+        document.getElementById("notifications").innerHTML += `<p>Connected: ${socket.id}</p>`;
+        socket.emit("authenticate", token);
+      });
+
+      socket.on("orderCreated", (data) => {
+        console.log("Order created:", data);
+        const notificationDiv = document.getElementById("notifications");
+        notificationDiv.innerHTML += `<p>New Order #${data.orderId} created! Total: ${data.totalAmount} AED, Status: ${data.status}</p>`;
+      });
+
+      socket.on("orderStatusUpdated", (data) => {
+        console.log("Order status updated:", data);
+        const notificationDiv = document.getElementById("notifications");
+        notificationDiv.innerHTML += `<p>Order #${data.orderId} status updated to: ${data.status}</p>`;
+      });
+
+      socket.on("connect_error", (err) => {
+        console.log("Connection error:", err.message);
+        document.getElementById("notifications").innerHTML += `<p>Connection error: ${err.message}</p>`;
+      });
+
+      socket.on("disconnect", () => {
+        console.log("Disconnected from Socket.IO");
+        document.getElementById("notifications").innerHTML += `<p>Disconnected</p>`;
+      });
+    }
+  </script>
+</body>
+</html>

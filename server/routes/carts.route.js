@@ -4,7 +4,7 @@ const cart = require("../controllers/cart.controller");
 const {authenticate} =require('../middlewares/auth.middlesware')
 const csrfProtection = require('../middlewares/csurf.middleware');
 
-router.post("/", csrfProtection, authenticate, cart.createCart);
+router.post("/", authenticate, cart.createCart);
 router.get("/",authenticate, cart.getCart);
 router.delete("/clear",authenticate, cart.clearCart);
 router.delete("/:id",authenticate, cart.removeFromCart);

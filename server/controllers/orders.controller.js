@@ -4,6 +4,7 @@ const cache = require("../util/memory-cache.utils");
 
 exports.createOrder = async (req, res) => {
   const userId = req.user?.id;
+  const io = req.app.get('io')
   if (!userId) {
     return res.status(401).json({ message: "Must be logged in to create orders" });
   }
@@ -91,10 +92,21 @@ exports.createOrder = async (req, res) => {
       const cacheKey = `cart_user_${userId}`;
       cache.del(cacheKey);
 
-      res.status(201).json({
-        message: "Order created successfully",
-        orderId,
-        clientSecret: paymentIntent.client_secret,
+     if (io) {
+       io.to(`user:${userId}`).emit("orderCreated", {
+         orderId,
+         totalAmount: total,
+         status: "pending",
+         items: cartItemsResult.rows.map((item) => ({
+           productId: item.product_id,
+           name: item.name,
+           quantity: item.quantity,
+           price: item.price,
+         })),
+       });
+     }
+
+      res.status(201).json({ message: "Order created successfully",orderId,clientSecret: paymentIntent.client_secret,
       });
     } catch (err) {
       await client.query("ROLLBACK");
@@ -195,6 +207,7 @@ exports.updateOrderStatus = async (req, res) => {
   const { status } = req.body;
   const orderId = parseInt(req.params.id);
   const userId = req.user?.id;
+  const io = req.app.get("io");
 
   if (!userId) {
     return res.status(401).json({ message: "Authentication required" });
@@ -224,6 +237,15 @@ exports.updateOrderStatus = async (req, res) => {
       return res.status(404).json({ message: "Order not found" });
     }
 
+    if (io) {
+      io.to(`user:${userId}`).emit("orderStatusUpdated", {
+        orderId,
+        status,
+        totalAmount:updateResult.rows[0].total_amount,
+        createdAt: updateResult.rows[0].createdAt
+      });
+    }
+
     res.status(200).json({
       message: "Order status updated successfully",
       order: updateResult.rows[0],
@@ -240,35 +262,133 @@ exports.updateOrderStatus = async (req, res) => {
 // Stripe webhook handler for payment status updates
 exports.handleStripeWebhook = async (req, res) => {
   const sig = req.headers["stripe-signature"];
-  let event;
+  const io = req.app.get("io");
 
   try {
-    event = stripe.webhooks.constructEvent(
+    const event = stripe.webhooks.constructEvent(
       req.body,
       sig,
       process.env.STRIPE_WEBHOOK_SECRET
     );
-  } catch (err) {
-    console.error("Webhook signature verification failed:", err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
-  }
 
-  try {
-    if (event.type === "payment_intent.succeeded") {
-      const paymentIntent = event.data.object;
+    let paymentIntent;
+    let userId = null;
+    if (event.type.startsWith("payment_intent.")) {
+      paymentIntent = event.data.object;
+      userId = paymentIntent.metadata?.userId || null;
+    } else if (event.type.startsWith("charge.")) {
+      const charge = event.data.object;
+      if (charge.payment_intent) {
+        paymentIntent = await stripe.paymentIntents.retrieve(charge.payment_intent);
+        userId = paymentIntent.metadata?.userId || null;
+        console.log(`Charge event: ${event.id}, paymentIntent: ${paymentIntent.id}, userId: ${userId || 'none'}`);
+      }
+    }
 
-      await pool.query(
-        `UPDATE orders 
-                 SET status = 'paid', 
-                     payment_confirmed_at = CURRENT_TIMESTAMP 
-                 WHERE payment_intent_id = $1`,
-        [paymentIntent.id]
-      );
+    if (!paymentIntent) {
+      return res.json({ received: true });
+    }
+
+    if (event.type === "payment_intent.created") {
+      let orderResult;
+      try {
+        orderResult = await pool.query(
+          `SELECT id, user_id, total_amount, created_at 
+           FROM orders 
+           WHERE payment_intent_id = $1`,
+          [paymentIntent.id]
+        );
+      } catch (dbErr) {
+        console.error(`Database error checking order for payment intent ${paymentIntent.id}:`, dbErr.message, dbErr.stack);
+        return res.json({ received: true });
+      }
+      if (orderResult.rows.length > 0 && io && userId) {
+        const order = orderResult.rows[0];
+        io.to(`user:${userId}`).emit("orderCreated", {
+          orderId: order.id,
+          totalAmount: order.total_amount,
+          status: "pending",
+          paymentIntentId: paymentIntent.id,
+          createdAt: order.created_at,
+        });
+      }
+    } else if (event.type === "payment_intent.succeeded") {
+      let orderCheck;
+      try {
+        orderCheck = await pool.query(
+          `SELECT id, status, user_id, total_amount, created_at 
+           FROM orders 
+           WHERE payment_intent_id = $1`,
+          [paymentIntent.id]
+        );
+      } catch (dbErr) {
+        console.error(`Database error checking order for payment intent ${paymentIntent.id}:`, dbErr.message, dbErr.stack);
+        return res.json({ received: true });
+      }
+
+      if (orderCheck.rows.length > 0 && orderCheck.rows[0].status === "paid") {
+        return res.json({ received: true });
+      }
+
+      let orderResult;
+      try {
+        orderResult = await pool.query(
+          `UPDATE orders 
+           SET status = $1, payment_confirmed_at = CURRENT_TIMESTAMP 
+           WHERE payment_intent_id = $2 
+           RETURNING id, user_id, total_amount, created_at`,
+          ["paid", paymentIntent.id]
+        );
+      } catch (dbErr) {
+        console.error(`Database error updating order for payment intent ${paymentIntent.id}:`, dbErr.message, dbErr.stack);
+        return res.json({ received: true });
+      }
+
+      if (orderResult.rows.length > 0) {
+        const order = orderResult.rows[0];
+        if (io && userId) {
+          io.to(`user:${userId}`).emit("orderStatusUpdated", {
+            orderId: order.id,
+            status: "paid",
+            totalAmount: order.total_amount,
+            createdAt: order.created_at,
+          });
+        }
+      } else {
+        console.log(`No order found for paymentIntent: ${paymentIntent.id}`);
+      }
+    } else if (event.type === "payment_intent.payment_failed") {
+      console.log(`Failed to process paymentIntent ${paymentIntent.id} for user: ${userId}`);
+      let orderResult;
+      try {
+        orderResult = await pool.query(
+          `UPDATE orders 
+           SET status = $1 
+           WHERE payment_intent_id = $2 
+           RETURNING id, user_id, total_amount, created_at`,
+          ["failed", paymentIntent.id]
+        );
+        console.log(`Order update result for failed paymentIntent ${paymentIntent.id}:`, orderResult.rows);
+      } catch (dbErr) {
+        console.error(`Database error updating order for payment intent ${paymentIntent.id}:`, dbErr.message, dbErr.stack);
+        return res.json({ received: true });
+      }
+
+      if (orderResult.rows.length > 0 && io && userId) {
+        const order = orderResult.rows[0];
+        io.to(`user:${userId}`).emit("orderStatusUpdated", {
+          orderId: order.id,
+          status: "failed",
+          totalAmount: order.total_amount,
+          createdAt: order.created_at,
+        });
+        console.log(`Payment failure notification sent to user:${userId} for order ${order.id}`);
+      }
     }
 
     res.json({ received: true });
   } catch (err) {
-    console.error("Error processing webhook:", err);
+    console.error("Error processing webhook:", err.message, err.stack);
     res.status(500).json({ error: "Webhook processing failed" });
   }
 };
