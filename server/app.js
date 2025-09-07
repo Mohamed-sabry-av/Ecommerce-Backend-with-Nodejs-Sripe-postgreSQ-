@@ -18,6 +18,7 @@ app.use(sessionMiddleware);
 app.use("/user", require("./routes/users.route"));
 app.use("/product", require("./routes/products.route"));
 app.use("/cart", require("./routes/carts.route"));
+app.use("/checkout", require("./routes/checkout.route"));
 
 app.listen(process.env.PORT, () =>
   console.log(`server started at port ${process.env.PORT}`)

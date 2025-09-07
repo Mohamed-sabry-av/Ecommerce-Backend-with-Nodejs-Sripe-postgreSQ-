@@ -96,7 +96,6 @@ exports.createCart = async (req, res) => {
   }
 };
 
-
 exports.getCart = async(req,res)=>{
     const userId = req.user?.id;
     
@@ -207,3 +206,108 @@ exports.removeFromCart = async (req,res)=>{
         res.status(500).json({ message: "Failed to remove from cart" });
     }
 }
+
+exports.editCartItem = async (req,res)=>{
+    const itemId = parseInt(req.params.id);
+    const { quantity } = req.body;
+    const userId = req.user?.id;
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+        return res.status(400).json({message: "Invalid input: positive quantity is required",});
+      }
+    try{
+        if(userId){
+            const cartResult =await pool.query(
+                `SELECT * FROM carts WHERE user_id = $1`,[userId]
+            )
+            if(cartResult.rows.length === 0){
+                return res.status(404).json({ message: "Cart not found" });
+            }
+            const cartId = cartResult.rows[0].id;
+            const itemResult = await pool.query(
+                `SELECT * FROM cart_items WHERE id = $1 AND cart_id = $2`,[itemId,cartId]
+            )
+            if(itemResult.rows.length ===0){
+                return res.status(404).json({message: "Item not found in cart"});
+            }
+            const productId = itemResult.rows[0].product_id;
+
+            const productResult = await pool.query(
+                `SELECT stock FROM products WHERE id = $1`,[productId]
+            )
+            const product = productResult.rows[0];
+            if(product.stock < quantity){
+                return res.status(400).json({ message: "Insufficient stock for updated quantity" });
+            }
+            const updateResult = await pool.query(
+                `UPDATE cart_items SET quantity = $1 WHERE id = $2 RETURNING id, cart_id, product_id, quantity`,[quantity,itemId]
+            )
+            res.status(200).json({message: "Cart item updated successfully", item: updateResult.rows[0]})
+        }
+        else{
+            // Guest
+            if (!req.session || !req.session.cart) {
+                return res.status(404).json({ message: "Cart not found" });
+              }
+                const item = req.session.cart.find((item) => item.id === itemId);
+                if (!item) {
+                    return res.status(404).json({ message: "Item not found in cart" });
+                }
+                const productResult = await pool.query(
+                    `SELECT stock FROM products WHERE id = $1`,[item.product_id]
+                )
+                const product = productResult.rows[0];
+                if(product.stock < quantity){
+                    return res.status(400).json({ message: "Insufficient stock for updated quantity" });
+                }
+                item.quantity = quantity;
+                req.session.save((err) => {
+                    if (err) {
+                      console.error("Error saving session:", err.message);
+                      return res.status(500).json({ message: "Failed to save session" });
+                    }
+                  });
+                    res.status(200).json({message: "Cart item updated successfully", item})
+        }
+    }catch(err){
+         console.error("Error removing from cart:", err);
+        res.status(500).json({ message: "Failed to remove from cart" });
+    }
+}
+
+exports.clearCart = async (req, res) => {
+  const userId = req.user?.id;
+
+  try {
+    if (userId) {
+      const cartResult = await pool.query(`SELECT id FROM carts WHERE user_id = $1`, [userId]);
+      if (cartResult.rows.length === 0) {
+        return res.status(404).json({ message: "Cart not found" });
+      }
+      const cartId = cartResult.rows[0].id;
+
+      await pool.query(`DELETE FROM cart_items WHERE cart_id = $1`, [cartId]);
+      res.status(200).json({ message: "Cart cleared successfully" });
+    } else {
+      if (!req.session || !req.session.cart) {
+        return res.status(404).json({ message: "Cart not found" });
+      }
+
+      req.session.cart = [];
+      await new Promise((resolve, reject) => {
+        req.session.save((err) => {
+          if (err) {
+            console.error("Error saving session:", err.message);
+            reject(err);
+          } else {
+            resolve();
+          }
+        });
+      });
+
+      res.status(200).json({ message: "Cart cleared successfully" });
+    }
+  } catch (err) {
+    console.error("Error clearing cart:", err.message);
+    res.status(500).json({ message: "Something went wrong", error: err.message });
+  }
+};
